@@ -126,6 +126,7 @@ def _capture_frame(params):
 
     # Create and configure the render target ----------------------------
     render_target = unreal.RenderingLibrary.create_render_target2d(world, width, height)
+    render_target.render_target_format = unreal.TextureRenderTargetFormat.RTF_RGBA8
     render_target.target_gamma = TARGET_GAMMA
 
     capture_component.texture_target = render_target

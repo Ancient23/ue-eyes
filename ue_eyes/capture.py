@@ -12,6 +12,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
+
 from .remote_exec import UERemoteExecution
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
 MANIFEST_FILENAME = "capture_manifest.json"
+
+# OpenEXR magic bytes — used to detect render targets exported as EXR
+# despite having a .png file extension (happens when format is RTF_RGBA16f).
+_EXR_MAGIC = b"\x76\x2f\x31\x01"
 
 # Paths to the scripts that run inside UE
 _SCRIPTS_DIR = Path(__file__).resolve().parent / "unreal_scripts"
@@ -60,6 +66,48 @@ def _plugin_snap_camera_code(camera: str) -> str:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _fix_exr_as_png(output_dir: Path) -> None:
+    """Re-encode any EXR files masquerading as PNGs in *output_dir*.
+
+    UE's ``ExportRenderTarget`` writes EXR data when the render target uses a
+    float format (e.g. ``RTF_RGBA16f``), even if the filename ends in ``.png``.
+    This helper detects the EXR magic bytes and re-saves them as real 8-bit
+    PNGs using OpenCV so downstream consumers (including the Claude API) can
+    read them.
+    """
+    import os
+
+    import cv2  # local import — only needed when this path fires
+
+    for png_path in output_dir.glob("*.png"):
+        header = png_path.read_bytes()[:4]
+        if header == _EXR_MAGIC:
+            logger.warning(
+                "Detected EXR data in %s — converting to PNG", png_path.name
+            )
+            # OpenCV disables EXR by default; enable it for this read
+            old_val = os.environ.get("OPENCV_IO_ENABLE_OPENEXR")
+            os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+            try:
+                img = cv2.imread(str(png_path), cv2.IMREAD_UNCHANGED)
+            finally:
+                if old_val is None:
+                    os.environ.pop("OPENCV_IO_ENABLE_OPENEXR", None)
+                else:
+                    os.environ["OPENCV_IO_ENABLE_OPENEXR"] = old_val
+            if img is None:
+                logger.error("Failed to decode %s", png_path)
+                continue
+            # Normalize float / 16-bit images to 8-bit
+            if img.dtype != np.uint8:
+                if np.issubdtype(img.dtype, np.floating):
+                    img = np.clip(img * 255, 0, 255).astype(np.uint8)
+                else:
+                    info = np.iinfo(img.dtype)
+                    img = np.clip(img / info.max * 255, 0, 255).astype(np.uint8)
+            cv2.imwrite(str(png_path), img)
+
 
 def _write_manifest(output_dir: Path, manifest: dict) -> Path:
     """Write *manifest* as ``capture_manifest.json`` in *output_dir*."""
@@ -138,6 +186,9 @@ def snap_frame(
     finally:
         if owns_connection:
             ue.close()
+
+    # Ensure captured files are actual PNGs (not EXR-in-disguise)
+    _fix_exr_as_png(out)
 
     # Build manifest
     pngs = sorted(out.glob("*.png"))
@@ -221,6 +272,9 @@ def render_sequence(
     finally:
         if owns_connection:
             ue.close()
+
+    # Ensure rendered files are actual PNGs (not EXR-in-disguise)
+    _fix_exr_as_png(out)
 
     pngs = sorted(out.glob("*.png"))
     manifest: dict = {
