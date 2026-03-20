@@ -27,15 +27,15 @@ bool AUEEyesCaptureService::CaptureFromPreset(const FString& PresetName, const F
 		return false;
 	}
 
-	AActor* Owner = Preset->GetOwner();
-	if (!Owner)
+	AActor* PresetOwner = Preset->GetOwner();
+	if (!PresetOwner)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UEEyes: Preset '%s' has no owning actor"), *PresetName);
 		return false;
 	}
 
-	FVector Location = Owner->GetActorLocation() + Preset->Offset;
-	FRotator Rotation = Owner->GetActorRotation();
+	FVector Location = PresetOwner->GetActorLocation() + Preset->Offset;
+	FRotator Rotation = PresetOwner->GetActorRotation();
 
 	// Apply tracking mode
 	if (Preset->TrackingMode != EUEEyesTrackingMode::Fixed)
