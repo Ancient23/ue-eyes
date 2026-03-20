@@ -10,6 +10,9 @@ import pytest
 
 from ue_eyes.scoring import (
     compute_scores,
+    create_comparison,
+    create_comparison_grid,
+    create_difference_map,
     load_scorer,
     match_frames,
     phash_score,
@@ -327,3 +330,164 @@ def test_match_frames_non_image_ignored(tmp_path: Path) -> None:
 
     pairs = match_frames(str(dir_a), str(dir_b))
     assert pairs == []
+
+
+# ===========================================================================
+# Comparison visualization tests
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# 20. create_comparison — creates file
+# ---------------------------------------------------------------------------
+
+
+def test_create_comparison_creates_file(tmp_path: Path) -> None:
+    """create_comparison writes an output PNG."""
+    ref = tmp_path / "ref.png"
+    render = tmp_path / "render.png"
+    out = tmp_path / "out" / "comparison.png"
+    _make_image(ref, width=80, height=60, color=(100, 100, 100))
+    _make_image(render, width=80, height=60, color=(200, 200, 200))
+    create_comparison(str(ref), str(render), str(out))
+    assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# 21. create_comparison — wider than inputs
+# ---------------------------------------------------------------------------
+
+
+def test_create_comparison_wider_than_inputs(tmp_path: Path) -> None:
+    """Output width should be larger than either input (ref + render + separator)."""
+    ref = tmp_path / "ref.png"
+    render = tmp_path / "render.png"
+    out = tmp_path / "comparison.png"
+    _make_image(ref, width=80, height=60, color=(100, 100, 100))
+    _make_image(render, width=80, height=60, color=(200, 200, 200))
+    create_comparison(str(ref), str(render), str(out))
+    result = cv2.imread(str(out), cv2.IMREAD_COLOR)
+    assert result is not None
+    result_w = result.shape[1]
+    assert result_w > 80
+
+
+# ---------------------------------------------------------------------------
+# 22. create_comparison — has label height
+# ---------------------------------------------------------------------------
+
+
+def test_create_comparison_has_label_height(tmp_path: Path) -> None:
+    """Output height should exceed the reference height (label bar added)."""
+    ref = tmp_path / "ref.png"
+    render = tmp_path / "render.png"
+    out = tmp_path / "comparison.png"
+    ref_h = 60
+    _make_image(ref, width=80, height=ref_h, color=(100, 100, 100))
+    _make_image(render, width=80, height=ref_h, color=(200, 200, 200))
+    create_comparison(str(ref), str(render), str(out))
+    result = cv2.imread(str(out), cv2.IMREAD_COLOR)
+    assert result is not None
+    assert result.shape[0] > ref_h
+
+
+# ---------------------------------------------------------------------------
+# 23. create_difference_map — creates file
+# ---------------------------------------------------------------------------
+
+
+def test_create_difference_map_creates_file(tmp_path: Path) -> None:
+    """create_difference_map writes an output PNG."""
+    ref = tmp_path / "ref.png"
+    render = tmp_path / "render.png"
+    out = tmp_path / "diff.png"
+    _make_image(ref, width=64, height=64, color=(100, 100, 100))
+    _make_image(render, width=64, height=64, color=(200, 200, 200))
+    create_difference_map(str(ref), str(render), str(out))
+    assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# 24. create_difference_map — identical images produce low-variance heatmap
+# ---------------------------------------------------------------------------
+
+
+def test_create_difference_map_identical_is_uniform(tmp_path: Path) -> None:
+    """Identical images should produce a uniform (low-variance) heatmap."""
+    ref = tmp_path / "ref.png"
+    out = tmp_path / "diff.png"
+    _make_image(ref, width=64, height=64, color=(128, 128, 128))
+    create_difference_map(str(ref), str(ref), str(out))
+    result = cv2.imread(str(out), cv2.IMREAD_COLOR)
+    assert result is not None
+    # All diff pixels are 0 -> same JET mapping -> very low variance
+    gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+    assert float(np.var(gray)) < 1.0
+
+
+# ---------------------------------------------------------------------------
+# 25. create_comparison_grid — creates file
+# ---------------------------------------------------------------------------
+
+
+def test_create_comparison_grid_creates_file(tmp_path: Path) -> None:
+    """create_comparison_grid writes an output PNG."""
+    ref_dir = tmp_path / "ref"
+    render_dir = tmp_path / "render"
+    ref_dir.mkdir()
+    render_dir.mkdir()
+    for i in range(3):
+        _make_image(ref_dir / f"frame_{i:03d}.png", width=80, height=60)
+        _make_image(render_dir / f"frame_{i:03d}.png", width=80, height=60)
+    out = tmp_path / "grid.png"
+    create_comparison_grid(str(ref_dir), str(render_dir), str(out))
+    assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# 26. create_comparison_grid — respects max_frames
+# ---------------------------------------------------------------------------
+
+
+def test_create_comparison_grid_respects_max_frames(tmp_path: Path) -> None:
+    """Grid should contain at most max_frames rows of pairs."""
+    ref_dir = tmp_path / "ref"
+    render_dir = tmp_path / "render"
+    ref_dir.mkdir()
+    render_dir.mkdir()
+    for i in range(10):
+        _make_image(ref_dir / f"frame_{i:03d}.png", width=80, height=60)
+        _make_image(render_dir / f"frame_{i:03d}.png", width=80, height=60)
+    out = tmp_path / "grid.png"
+    max_frames = 3
+    create_comparison_grid(str(ref_dir), str(render_dir), str(out), max_frames=max_frames)
+    result = cv2.imread(str(out), cv2.IMREAD_COLOR)
+    assert result is not None
+    # Each row is GRID_ROW_HEIGHT (200) pixels + 1px separator between rows
+    # max_frames rows => height = max_frames * 200 + (max_frames - 1) * 1
+    from ue_eyes.scoring.compare import GRID_ROW_HEIGHT
+    expected_height = max_frames * GRID_ROW_HEIGHT + (max_frames - 1) * 1
+    assert result.shape[0] == expected_height
+
+
+# ---------------------------------------------------------------------------
+# 27. create_comparison_grid — no matches produces placeholder
+# ---------------------------------------------------------------------------
+
+
+def test_create_comparison_grid_no_matches(tmp_path: Path) -> None:
+    """When no frames match, a placeholder image is created."""
+    ref_dir = tmp_path / "ref"
+    render_dir = tmp_path / "render"
+    ref_dir.mkdir()
+    render_dir.mkdir()
+    _make_image(ref_dir / "frame_001.png")
+    _make_image(render_dir / "frame_999.png")
+    out = tmp_path / "grid.png"
+    create_comparison_grid(str(ref_dir), str(render_dir), str(out))
+    assert out.exists()
+    result = cv2.imread(str(out), cv2.IMREAD_COLOR)
+    assert result is not None
+    # Placeholder is 100x400
+    assert result.shape[0] == 100
+    assert result.shape[1] == 400
