@@ -1,0 +1,17 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "UE Eyes",
+  "Description": "Camera presets and capture service for AI agent visual access",
+  "Category": "AI",
+  "CreatedBy": "Ancient23",
+  "Installed": true,
+  "Modules": [
+    {
+      "Name": "UEEyes",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ]
+}
