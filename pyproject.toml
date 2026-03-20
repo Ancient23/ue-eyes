@@ -9,6 +9,10 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project.scripts]
 ue-eyes = "ue_eyes.cli:main"
 
