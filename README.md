@@ -1,10 +1,16 @@
 # UE Eyes
 
-> Inspired by [autoresearch](https://github.com/karpathy/autoresearch) by Andrej Karpathy.
-
 Give AI coding agents visual access to Unreal Engine 5.7 projects.
 
 UE Eyes captures screenshots from the UE editor, analyzes them, and uses that information to drive iterative development and structured parameter tuning. Install it as a Claude Code plugin and use it with any UE 5.7 project.
+
+## Inspiration
+
+This project was inspired by Andrej Karpathy's [autoresearch](https://github.com/karpathy/autoresearch), which gives an AI agent a training script and lets it autonomously run ML experiments — editing code, training, measuring val_bpb, keeping improvements, reverting failures, and looping indefinitely. The core insight is powerful: give an agent a measurable objective, a single file to edit, and a fixed evaluation budget, then let it iterate with full creative reasoning.
+
+UE Eyes applies that same autonomous experiment loop to Unreal Engine development. Where autoresearch optimizes a loss metric on a GPU, UE Eyes optimizes visual quality in a 3D scene. The agent captures screenshots instead of reading loss values, compares frames instead of checking val_bpb, and tunes scene parameters instead of model hyperparameters — but the methodology is identical: hypothesize, change one thing, measure, keep or revert, repeat.
+
+The key difference is that UE Eyes also works outside the research loop. Not every problem needs structured optimization — sometimes an agent just needs to *see* what's happening in the editor. UE Eyes provides zero-config screenshot capture for iterative development alongside the full autoresearch-style experiment loop for parameter tuning.
 
 ## Quick Start
 
