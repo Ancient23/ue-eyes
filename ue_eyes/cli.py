@@ -22,6 +22,13 @@ from pathlib import Path
 import click
 
 from ue_eyes import __version__
+from ue_eyes.project_setup import (
+    find_uproject,
+    add_plugins_to_uproject,
+    configure_remote_exec,
+    get_symlink_command,
+    verify_symlink,
+)
 from ue_eyes.remote_exec import (
     UEConnectionError,
     UEExecutionError,
@@ -319,6 +326,126 @@ def score(reference: str, capture: str, metrics: str) -> None:
         )
 
     _dump_json(all_results)
+
+
+# ------------------------------------------------------------------
+# setup
+# ------------------------------------------------------------------
+
+_REQUIRED_PLUGINS = ["PythonScriptPlugin", "UEEyes"]
+
+
+@main.command()
+@click.argument("project_path", default=".", type=click.Path())
+def setup(project_path: str) -> None:
+    """Configure a UE project to work with ue-eyes.
+
+    PROJECT_PATH is the root directory of the UE project (default: current dir).
+
+    Runs an interactive 6-step flow:
+      1. Detect the .uproject file
+      2. Show symlink guidance for the UEEyes plugin
+      3. Edit .uproject to enable required plugins
+      4. Edit DefaultEditor.ini to enable remote execution
+      5. Prompt to rebuild the project
+      6. Verify the connection to UE
+    """
+    project = Path(project_path).resolve()
+
+    # ------------------------------------------------------------------
+    # Step 1: Detect .uproject
+    # ------------------------------------------------------------------
+    click.secho("Step 1/6: Detecting .uproject file...", fg="cyan")
+    uproject = find_uproject(project)
+    if uproject is None:
+        click.secho(
+            f"Error: No .uproject file found in {project}", fg="red", err=True
+        )
+        click.secho(
+            "Make sure PROJECT_PATH points to the root of a UE project.", fg="yellow"
+        )
+        raise SystemExit(1)
+    click.secho(f"  Found: {uproject.name}", fg="green")
+
+    # ------------------------------------------------------------------
+    # Step 2: Symlink guidance
+    # ------------------------------------------------------------------
+    click.secho("Step 2/6: UEEyes plugin symlink...", fg="cyan")
+    symlink_cmd = get_symlink_command(project)
+    click.echo(
+        "  The UEEyes plugin must be accessible inside your project's Plugins/ folder.\n"
+        "  Run the following command (as Administrator on Windows):\n"
+    )
+    click.secho(f"    {symlink_cmd}", fg="yellow")
+    click.echo("")
+    if not click.confirm("  Have you created the symlink?", default=False):
+        click.secho(
+            "  Skipping symlink step. You can run setup again after creating the symlink.",
+            fg="yellow",
+        )
+
+    # ------------------------------------------------------------------
+    # Step 3: Edit .uproject
+    # ------------------------------------------------------------------
+    click.secho("Step 3/6: Enabling plugins in .uproject...", fg="cyan")
+    added = add_plugins_to_uproject(uproject, _REQUIRED_PLUGINS)
+    if added:
+        click.secho(f"  Added plugins: {', '.join(added)}", fg="green")
+    else:
+        click.secho("  All required plugins already present.", fg="green")
+
+    # ------------------------------------------------------------------
+    # Step 4: Edit DefaultEditor.ini
+    # ------------------------------------------------------------------
+    click.secho("Step 4/6: Configuring remote execution in DefaultEditor.ini...", fg="cyan")
+    config_dir = project / "Config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    changed = configure_remote_exec(config_dir)
+    if changed:
+        click.secho("  Remote execution enabled in DefaultEditor.ini.", fg="green")
+    else:
+        click.secho("  Remote execution already configured.", fg="green")
+
+    # ------------------------------------------------------------------
+    # Step 5: Rebuild prompt
+    # ------------------------------------------------------------------
+    click.secho("Step 5/6: Rebuild the project...", fg="cyan")
+    click.echo(
+        "  Close the UE editor, then regenerate project files and recompile:\n"
+        "  - Right-click the .uproject → 'Generate Visual Studio project files'\n"
+        "  - Build the project in your IDE or via UnrealBuildTool\n"
+    )
+    click.confirm("  Press Enter when ready (or Ctrl-C to stop)", default=True)
+
+    # ------------------------------------------------------------------
+    # Step 6: Verify connection
+    # ------------------------------------------------------------------
+    click.secho("Step 6/6: Verifying UE connection...", fg="cyan")
+    symlink_ok = verify_symlink(project)
+    if symlink_ok:
+        click.secho("  UEEyes plugin directory found.", fg="green")
+    else:
+        click.secho(
+            "  Warning: UEEyes plugin not found at Plugins/UEEyes. "
+            "Check the symlink and rebuild.",
+            fg="yellow",
+        )
+
+    ue = None
+    try:
+        ue = UERemoteExecution()
+        reachable = ue.ping()
+    except Exception:
+        reachable = False
+
+    if reachable:
+        click.secho("  UE is reachable — setup complete!", fg="green")
+    else:
+        click.secho(
+            "  UE is not reachable yet. Open the UE editor with the plugin enabled,\n"
+            "  then run: ue-eyes ping",
+            fg="yellow",
+        )
 
 
 if __name__ == "__main__":

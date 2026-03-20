@@ -377,3 +377,15 @@ def test_score_custom_metrics(
     assert call_args[0][2] == ["ssim", "pixel_mse"]
     assert "ssim" in result.output
     assert "pixel_mse" in result.output
+
+
+# ------------------------------------------------------------------
+# setup
+# ------------------------------------------------------------------
+
+
+def test_setup_command_exists(runner: CliRunner) -> None:
+    """setup --help works and documents the command."""
+    result = runner.invoke(main, ["setup", "--help"])
+    assert result.exit_code == 0
+    assert "setup" in result.output.lower() or "project" in result.output.lower()
