@@ -8,19 +8,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 
-VERSION_SOURCES = {
-    "pyproject.toml": {
-        "path": REPO_ROOT / "pyproject.toml",
-        "pattern": re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE),
-    },
-    "ue_eyes/__init__.py": {
-        "path": REPO_ROOT / "ue_eyes" / "__init__.py",
-        "pattern": re.compile(r'^__version__\s*=\s*"([^"]+)"', re.MULTILINE),
-    },
-}
-
-PLUGIN_JSON = REPO_ROOT / ".claude-plugin" / "plugin.json"
-
 
 def read_version_from_text(label: str, path: Path, pattern: re.Pattern) -> str:
     text = path.read_text(encoding="utf-8")
@@ -40,13 +27,29 @@ def read_version_from_json(path: Path) -> str:
     return version
 
 
+def get_pyproject_version() -> str:
+    pattern = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
+    return read_version_from_text(
+        "pyproject.toml",
+        REPO_ROOT / "pyproject.toml",
+        pattern,
+    )
+
+
+def get_init_version() -> str:
+    import importlib
+    mod = importlib.import_module("ue_eyes")
+    return mod.__version__
+
+
 def main() -> None:
     versions: dict[str, str] = {}
 
-    for label, spec in VERSION_SOURCES.items():
-        versions[label] = read_version_from_text(label, spec["path"], spec["pattern"])
-
-    versions[".claude-plugin/plugin.json"] = read_version_from_json(PLUGIN_JSON)
+    versions["pyproject.toml"] = get_pyproject_version()
+    versions["ue_eyes/__init__.py"] = get_init_version()
+    versions[".claude-plugin/plugin.json"] = read_version_from_json(
+        REPO_ROOT / ".claude-plugin" / "plugin.json"
+    )
 
     unique = set(versions.values())
     if len(unique) == 1:
