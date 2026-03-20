@@ -11,3 +11,7 @@ tune_params.json
 rubric.json
 ue-eyes.toml
 .superpowers/
+
+# UE C++ plugin build artifacts
+plugin/UEEyes/Binaries/
+plugin/UEEyes/Intermediate/
