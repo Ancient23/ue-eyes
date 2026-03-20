@@ -115,6 +115,33 @@ For persistent camera presets in the editor, copy `plugin/UEEyes/` into your pro
 
 The plugin is optional — everything works via Python remote execution without it.
 
+### Building the C++ Plugin from Source
+
+Pre-built binaries are not distributed because UE C++ plugins are tied to a specific engine `BuildId` — a binary built against one UE 5.7 installation will not load in another. You must compile the plugin against your own engine.
+
+**Prerequisites**
+
+- Unreal Engine 5.7 (source or installed build)
+- Visual Studio 2022 (with "Game Development with C++" workload) or JetBrains Rider
+
+**Steps**
+
+1. Copy or symlink `plugin/UEEyes/` into your project's `Plugins/` folder:
+
+   ```bash
+   cp -r plugin/UEEyes /path/to/YourProject/Plugins/UEEyes
+   # or on Windows (symlink, run as Administrator):
+   # mklink /D "C:\YourProject\Plugins\UEEyes" "C:\Source\ue-eyes\plugin\UEEyes"
+   ```
+
+2. Right-click your `.uproject` file and select **Generate Visual Studio project files** (or run `UnrealBuildTool` manually).
+
+3. Open the generated `.sln` (or `.uproject` in Rider) and build the **Development Editor** configuration for your project.
+
+4. Launch the UE editor. The plugin will load automatically; enable it in **Edit > Plugins > UEEyes** if it is not already active.
+
+> **Note:** If you see a "missing or incompatible module" dialog on editor start, the binary was built against a different engine version or BuildId. Rebuild as described above to resolve it.
+
 ## Scoring
 
 Built-in metrics: SSIM, Pixel MSE, Perceptual Hash. Add custom scorers:
