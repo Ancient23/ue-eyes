@@ -1,14 +1,18 @@
-"""Tests for ue_eyes.experiment — parameter loading, diffing, validation, and results tracking."""
+"""Tests for ue_eyes.experiment — parameter loading, diffing, validation, results tracking, and runner."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ue_eyes.config import UEEyesConfig
 from ue_eyes.experiment import (
     RESULTS_HEADER,
+    ExperimentResult,
+    ExperimentRunner,
     diff_params,
     get_best_score,
     get_param_value,
@@ -21,6 +25,13 @@ from ue_eyes.experiment import (
     set_param_value,
     validate_param_change,
 )
+from ue_eyes.experiment.runner import (
+    CAPTURES_SUBDIR,
+    COMPARISONS_SUBDIR,
+    EXPERIMENTS_DIR,
+    RESULT_FILENAME,
+)
+from ue_eyes.scoring.rubric import RubricResult
 
 
 # ---------------------------------------------------------------------------
@@ -484,3 +495,403 @@ def test_get_score_trend_fewer_than_n(tmp_path: Path) -> None:
     trend = get_score_trend(tsv, last_n=10)
     assert len(trend) == 2
     assert trend == [pytest.approx(0.55), pytest.approx(0.60)]
+
+
+# ===========================================================================
+# Experiment Runner tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_config(**overrides: object) -> UEEyesConfig:
+    """Return a UEEyesConfig with sensible test defaults."""
+    return UEEyesConfig(**overrides)  # type: ignore[arg-type]
+
+
+def _mock_snap_frame(output_dir: str, **kwargs: object) -> dict:
+    """Fake snap_frame that writes a dummy PNG so match_frames can find it."""
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    # Write a minimal 1x1 white PNG (valid file for os.path existence checks)
+    dummy = out / "frame_0001.png"
+    dummy.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
+    return {"type": "snap", "frames": [str(dummy)], "frame_count": 1, "output": ""}
+
+
+def _mock_compute_scores(
+    reference: Path,
+    capture: Path,
+    metrics: list[str],
+    weights: dict[str, float],
+) -> dict:
+    """Return deterministic scores for testing."""
+    scores = {m: 0.85 for m in metrics}
+    return {"scores": scores, "composite": 0.85}
+
+
+def _mock_compute_scores_high(
+    reference: Path,
+    capture: Path,
+    metrics: list[str],
+    weights: dict[str, float],
+) -> dict:
+    """Return high scores for keep-verdict testing."""
+    scores = {m: 0.95 for m in metrics}
+    return {"scores": scores, "composite": 0.95}
+
+
+def _mock_compute_scores_low(
+    reference: Path,
+    capture: Path,
+    metrics: list[str],
+    weights: dict[str, float],
+) -> dict:
+    """Return low scores for discard-verdict testing."""
+    scores = {m: 0.30 for m in metrics}
+    return {"scores": scores, "composite": 0.30}
+
+
+_RUNNER_PATCHES = (
+    "ue_eyes.experiment.runner.snap_frame",
+    "ue_eyes.experiment.runner.compute_scores",
+    "ue_eyes.experiment.runner.match_frames",
+    "ue_eyes.experiment.runner.create_comparison",
+    "ue_eyes.experiment.runner.create_difference_map",
+    "ue_eyes.experiment.runner.log_result",
+)
+
+
+def _setup_baseline(tmp_path: Path) -> Path:
+    """Create a baseline directory with a dummy frame."""
+    baseline = tmp_path / "baseline"
+    baseline.mkdir()
+    frame = baseline / "frame_0001.png"
+    frame.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
+    return baseline
+
+
+# ------------------------------------------------------------------
+# 33. test_experiment_result_dataclass
+# ------------------------------------------------------------------
+
+def test_experiment_result_dataclass() -> None:
+    """Construction and all fields accessible."""
+    result = ExperimentResult(
+        experiment_id="exp_001",
+        timestamp="2026-03-19T12:00:00+00:00",
+        params_before={"a": 1},
+        params_after={"a": 2},
+        parameter_changed="a",
+        hypothesis="Test hypothesis",
+        scores={"ssim": 0.85},
+        composite_score=0.85,
+        rubric_result=None,
+        verdict="baseline",
+        error=None,
+        notes="test note",
+        capture_dir=Path("captures"),
+        comparison_dir=Path("comparisons"),
+    )
+    assert result.experiment_id == "exp_001"
+    assert result.timestamp == "2026-03-19T12:00:00+00:00"
+    assert result.params_before == {"a": 1}
+    assert result.params_after == {"a": 2}
+    assert result.parameter_changed == "a"
+    assert result.hypothesis == "Test hypothesis"
+    assert result.scores == {"ssim": 0.85}
+    assert result.composite_score == 0.85
+    assert result.rubric_result is None
+    assert result.verdict == "baseline"
+    assert result.error is None
+    assert result.notes == "test note"
+    assert result.capture_dir == Path("captures")
+    assert result.comparison_dir == Path("comparisons")
+
+
+# ------------------------------------------------------------------
+# 34. test_runner_init_stores_config
+# ------------------------------------------------------------------
+
+def test_runner_init_stores_config() -> None:
+    """Config is accessible on the runner instance."""
+    config = _make_config()
+    runner = ExperimentRunner(config)
+    assert runner.config is config
+
+
+# ------------------------------------------------------------------
+# 35. test_set_baseline_stores_dir
+# ------------------------------------------------------------------
+
+def test_set_baseline_stores_dir(tmp_path: Path) -> None:
+    """reference_dir is stored by set_baseline."""
+    runner = ExperimentRunner(_make_config())
+    baseline = tmp_path / "baseline"
+    runner.set_baseline(baseline)
+    assert runner._baseline_dir == baseline
+
+
+# ------------------------------------------------------------------
+# 36. test_run_agent_mode_skips_apply
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_agent_mode_skips_apply(mock_snap: MagicMock, mock_log: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """apply_fn=None, params=None -> no apply called, snap_frame still called."""
+    monkeypatch.chdir(tmp_path)
+    runner = ExperimentRunner(_make_config())
+    # No apply_fn, no params — agent mode
+    result = runner.run_experiment("agent_test")
+    assert result.verdict in ("baseline", "keep", "discard")
+    mock_snap.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# 37. test_run_script_mode_calls_apply
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_script_mode_calls_apply(mock_snap: MagicMock, mock_log: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """apply_fn provided, no params -> apply_fn() called with no args."""
+    monkeypatch.chdir(tmp_path)
+    apply_fn = MagicMock()
+    runner = ExperimentRunner(_make_config())
+    runner.run_experiment("script_test", apply_fn=apply_fn)
+    apply_fn.assert_called_once_with()
+
+
+# ------------------------------------------------------------------
+# 38. test_run_hybrid_mode_calls_apply_with_params
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_hybrid_mode_calls_apply_with_params(mock_snap: MagicMock, mock_log: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """apply_fn + params -> apply_fn(params) called."""
+    monkeypatch.chdir(tmp_path)
+    apply_fn = MagicMock()
+    my_params = {"light_intensity": 5000}
+    runner = ExperimentRunner(_make_config())
+    runner.run_experiment("hybrid_test", apply_fn=apply_fn, params=my_params)
+    apply_fn.assert_called_once_with(my_params)
+
+
+# ------------------------------------------------------------------
+# 39. test_run_creates_experiment_dirs
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_creates_experiment_dirs(mock_snap: MagicMock, mock_log: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """captures/ and comparisons/ directories are created."""
+    monkeypatch.chdir(tmp_path)
+    runner = ExperimentRunner(_make_config())
+    runner.run_experiment("dir_test")
+    capture_dir = tmp_path / EXPERIMENTS_DIR / "dir_test" / CAPTURES_SUBDIR
+    comparison_dir = tmp_path / EXPERIMENTS_DIR / "dir_test" / COMPARISONS_SUBDIR
+    assert capture_dir.is_dir()
+    assert comparison_dir.is_dir()
+
+
+# ------------------------------------------------------------------
+# 40. test_run_calls_snap_frame
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_calls_snap_frame(mock_snap: MagicMock, mock_log: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """snap_frame is called with the correct output dir."""
+    monkeypatch.chdir(tmp_path)
+    runner = ExperimentRunner(_make_config())
+    runner.run_experiment("snap_test")
+
+    mock_snap.assert_called_once()
+    call_kwargs = mock_snap.call_args
+    output_dir = call_kwargs.kwargs.get("output_dir") or call_kwargs[1].get("output_dir")
+    assert CAPTURES_SUBDIR in output_dir
+
+
+# ------------------------------------------------------------------
+# 41. test_run_calls_compute_scores
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.create_difference_map")
+@patch("ue_eyes.experiment.runner.create_comparison")
+@patch("ue_eyes.experiment.runner.compute_scores", side_effect=_mock_compute_scores)
+@patch("ue_eyes.experiment.runner.match_frames")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_calls_compute_scores(
+    mock_snap: MagicMock,
+    mock_match: MagicMock,
+    mock_compute: MagicMock,
+    mock_comparison: MagicMock,
+    mock_diff: MagicMock,
+    mock_log: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """compute_scores is called when baseline is set."""
+    monkeypatch.chdir(tmp_path)
+    baseline = _setup_baseline(tmp_path)
+
+    # match_frames returns a pair of paths
+    ref_frame = str(baseline / "frame_0001.png")
+    cap_frame = str(tmp_path / EXPERIMENTS_DIR / "score_test" / CAPTURES_SUBDIR / "frame_0001.png")
+    mock_match.return_value = [(ref_frame, cap_frame)]
+
+    runner = ExperimentRunner(_make_config())
+    runner.set_baseline(baseline)
+    runner.run_experiment("score_test")
+
+    mock_compute.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# 42. test_run_baseline_verdict
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.get_best_score", return_value=None)
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_baseline_verdict(mock_snap: MagicMock, mock_best: MagicMock, mock_log: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """First experiment (no prior best) gets verdict='baseline'."""
+    monkeypatch.chdir(tmp_path)
+    runner = ExperimentRunner(_make_config())
+    result = runner.run_experiment("baseline_test")
+    assert result.verdict == "baseline"
+
+
+# ------------------------------------------------------------------
+# 43. test_run_keep_verdict
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.get_best_score", return_value={"composite_score": 0.50})
+@patch("ue_eyes.experiment.runner.create_difference_map")
+@patch("ue_eyes.experiment.runner.create_comparison")
+@patch("ue_eyes.experiment.runner.compute_scores", side_effect=_mock_compute_scores_high)
+@patch("ue_eyes.experiment.runner.match_frames")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_keep_verdict(
+    mock_snap: MagicMock,
+    mock_match: MagicMock,
+    mock_compute: MagicMock,
+    mock_comparison: MagicMock,
+    mock_diff: MagicMock,
+    mock_best: MagicMock,
+    mock_log: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Score improved -> verdict='keep'."""
+    monkeypatch.chdir(tmp_path)
+    baseline = _setup_baseline(tmp_path)
+
+    ref_frame = str(baseline / "frame_0001.png")
+    cap_frame = str(tmp_path / EXPERIMENTS_DIR / "keep_test" / CAPTURES_SUBDIR / "frame_0001.png")
+    mock_match.return_value = [(ref_frame, cap_frame)]
+
+    runner = ExperimentRunner(_make_config())
+    runner.set_baseline(baseline)
+    result = runner.run_experiment("keep_test")
+    assert result.verdict == "keep"
+    assert result.composite_score == pytest.approx(0.95)
+
+
+# ------------------------------------------------------------------
+# 44. test_run_discard_verdict
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.get_best_score", return_value={"composite_score": 0.90})
+@patch("ue_eyes.experiment.runner.create_difference_map")
+@patch("ue_eyes.experiment.runner.create_comparison")
+@patch("ue_eyes.experiment.runner.compute_scores", side_effect=_mock_compute_scores_low)
+@patch("ue_eyes.experiment.runner.match_frames")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_discard_verdict(
+    mock_snap: MagicMock,
+    mock_match: MagicMock,
+    mock_compute: MagicMock,
+    mock_comparison: MagicMock,
+    mock_diff: MagicMock,
+    mock_best: MagicMock,
+    mock_log: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Score worse -> verdict='discard'."""
+    monkeypatch.chdir(tmp_path)
+    baseline = _setup_baseline(tmp_path)
+
+    ref_frame = str(baseline / "frame_0001.png")
+    cap_frame = str(tmp_path / EXPERIMENTS_DIR / "discard_test" / CAPTURES_SUBDIR / "frame_0001.png")
+    mock_match.return_value = [(ref_frame, cap_frame)]
+
+    runner = ExperimentRunner(_make_config())
+    runner.set_baseline(baseline)
+    result = runner.run_experiment("discard_test")
+    assert result.verdict == "discard"
+    assert result.composite_score == pytest.approx(0.30)
+
+
+# ------------------------------------------------------------------
+# 45. test_run_capture_failure
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=ConnectionError("UE not running"))
+def test_run_capture_failure(mock_snap: MagicMock, mock_log: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """snap_frame raises -> verdict='failed', error populated, no retry."""
+    monkeypatch.chdir(tmp_path)
+    runner = ExperimentRunner(_make_config())
+    result = runner.run_experiment("fail_test")
+    assert result.verdict == "failed"
+    assert result.error is not None
+    assert "UE not running" in result.error
+    # snap_frame was called exactly once (no retry)
+    mock_snap.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# 46. test_run_writes_result_json
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_writes_result_json(mock_snap: MagicMock, mock_log: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """result.json is written to the experiment directory."""
+    monkeypatch.chdir(tmp_path)
+    runner = ExperimentRunner(_make_config())
+    runner.run_experiment("json_test")
+
+    result_path = tmp_path / EXPERIMENTS_DIR / "json_test" / RESULT_FILENAME
+    assert result_path.exists()
+
+    data = json.loads(result_path.read_text(encoding="utf-8"))
+    assert data["experiment_id"] == "json_test"
+    assert "timestamp" in data
+    assert "verdict" in data
+
+
+# ------------------------------------------------------------------
+# 47. test_run_logs_to_results_tsv
+# ------------------------------------------------------------------
+
+@patch("ue_eyes.experiment.runner.log_result")
+@patch("ue_eyes.experiment.runner.snap_frame", side_effect=_mock_snap_frame)
+def test_run_logs_to_results_tsv(mock_snap: MagicMock, mock_log: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """log_result is called to append to results.tsv."""
+    monkeypatch.chdir(tmp_path)
+    runner = ExperimentRunner(_make_config())
+    runner.run_experiment("log_test")
+    mock_log.assert_called_once()
+    call_args = mock_log.call_args
+    row = call_args[0][1]
+    assert row["experiment"] == "log_test"

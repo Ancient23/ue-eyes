@@ -17,8 +17,14 @@ from ue_eyes.experiment.results import (
     load_results,
     log_result,
 )
+from ue_eyes.experiment.runner import (
+    ExperimentResult,
+    ExperimentRunner,
+)
 
 __all__ = [
+    "ExperimentResult",
+    "ExperimentRunner",
     "PARAMS_VERSION",
     "RESULTS_HEADER",
     "diff_params",
