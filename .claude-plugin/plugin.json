@@ -1,0 +1,11 @@
+{
+  "name": "ue-eyes",
+  "version": "0.1.0",
+  "description": "Give AI agents visual access to Unreal Engine 5.7 projects",
+  "author": {
+    "name": "Ancient23"
+  },
+  "repository": "https://github.com/Ancient23/ue-eyes",
+  "license": "MIT",
+  "skills": "./skills/"
+}

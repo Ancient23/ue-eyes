@@ -1,0 +1,21 @@
+[project]
+name = "ue-eyes"
+version = "0.1.0"
+description = "Give AI agents visual access to Unreal Engine 5.7 projects"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.0",
+    "opencv-python>=4.8",
+    "numpy>=1.26",
+]
+
+[project.scripts]
+ue-eyes = "ue_eyes.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+]

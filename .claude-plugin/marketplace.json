@@ -1,0 +1,9 @@
+{
+  "plugins": [
+    {
+      "name": "ue-eyes",
+      "description": "Give AI agents visual access to Unreal Engine 5.7 projects — capture screenshots, compare frames, tune parameters",
+      "path": "."
+    }
+  ]
+}

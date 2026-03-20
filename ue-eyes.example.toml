@@ -1,0 +1,32 @@
+version = 1
+
+[connection]
+multicast_group = "239.0.0.1"      # UE remote execution multicast address
+multicast_port = 6766               # UE remote execution multicast port
+timeout = 30
+
+[capture]
+mode = "snap"                        # or "render"
+default_resolution = [1920, 1080]
+sequence_path = ""                   # for render mode
+map_path = ""                        # for render mode
+
+[cameras.front]
+location = [0, -200, 100]
+rotation = [0, 0, 0]
+tracking_mode = "look_at"
+target_actor = "BP_Character_01"
+target_bone = "head"
+
+[cameras.orbit]
+tracking_mode = "follow"
+target_actor = "BP_Character_01"
+offset = [0, -200, 50]
+
+[scoring]
+metrics = ["ssim"]                   # built-in metrics to compute
+composite_weights = { ssim = 1.0 }
+# Custom: metrics = ["ssim", "my_module:my_scorer"]
+
+[parameters]
+file = "tune_params.json"            # only for research loop mode

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+build/
+experiments/
+*.png
+capture_manifest.json
+tune_params.json
+rubric.json
+ue-eyes.toml
+.superpowers/
