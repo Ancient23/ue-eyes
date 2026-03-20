@@ -1,4 +1,4 @@
-"""Experiment sub-package — parameter management and (future) experiment running."""
+"""Experiment sub-package — parameter management, results tracking, and experiment running."""
 
 from ue_eyes.experiment.params import (
     PARAMS_VERSION,
@@ -9,12 +9,26 @@ from ue_eyes.experiment.params import (
     set_param_value,
     validate_param_change,
 )
+from ue_eyes.experiment.results import (
+    RESULTS_HEADER,
+    get_best_score,
+    get_score_trend,
+    init_results,
+    load_results,
+    log_result,
+)
 
 __all__ = [
     "PARAMS_VERSION",
+    "RESULTS_HEADER",
     "diff_params",
+    "get_best_score",
     "get_param_value",
+    "get_score_trend",
+    "init_results",
     "load_params",
+    "load_results",
+    "log_result",
     "save_params",
     "set_param_value",
     "validate_param_change",

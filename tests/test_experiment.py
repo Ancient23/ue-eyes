@@ -1,4 +1,4 @@
-"""Tests for ue_eyes.experiment — parameter loading, diffing, and validation."""
+"""Tests for ue_eyes.experiment — parameter loading, diffing, validation, and results tracking."""
 
 from __future__ import annotations
 
@@ -8,9 +8,15 @@ from pathlib import Path
 import pytest
 
 from ue_eyes.experiment import (
+    RESULTS_HEADER,
     diff_params,
+    get_best_score,
     get_param_value,
+    get_score_trend,
+    init_results,
     load_params,
+    load_results,
+    log_result,
     save_params,
     set_param_value,
     validate_param_change,
@@ -275,3 +281,206 @@ def test_set_param_value_invalid() -> None:
     params = _sample_params()
     with pytest.raises(ValueError, match="above maximum"):
         set_param_value(params, "shadow_bias", 5.0)
+
+
+# ===========================================================================
+# Results tracking tests
+# ===========================================================================
+
+def _sample_result(**overrides: object) -> dict:
+    """Return a representative result dict for testing."""
+    base: dict = {
+        "experiment": "exp_001",
+        "timestamp": "2026-03-19T12:00:00+00:00",
+        "parameter": "light_intensity",
+        "old_value": "5000",
+        "new_value": "8000",
+        "hypothesis": "Brighter light improves eye reflections",
+        "composite_score": 0.85,
+        "metric_scores_json": {"ssim": 0.82, "pixel_mse": 0.91},
+        "verdict": "improved",
+        "notes": "Clear improvement in specular highlights",
+    }
+    base.update(overrides)
+    return base
+
+
+# ------------------------------------------------------------------
+# 20. test_init_results_creates_file
+# ------------------------------------------------------------------
+
+def test_init_results_creates_file(tmp_path: Path) -> None:
+    """New file is created with the correct header."""
+    tsv = tmp_path / "results.tsv"
+    init_results(tsv)
+    assert tsv.exists()
+    text = tsv.read_text(encoding="utf-8")
+    header_line = text.strip().split("\n")[0]
+    assert header_line == "\t".join(RESULTS_HEADER)
+
+
+# ------------------------------------------------------------------
+# 21. test_init_results_idempotent
+# ------------------------------------------------------------------
+
+def test_init_results_idempotent(tmp_path: Path) -> None:
+    """Calling init_results twice does not overwrite the file."""
+    tsv = tmp_path / "results.tsv"
+    init_results(tsv)
+    # Append a dummy line so we can check it survives the second call.
+    with tsv.open("a", encoding="utf-8") as f:
+        f.write("extra_line\n")
+    init_results(tsv)
+    text = tsv.read_text(encoding="utf-8")
+    assert "extra_line" in text
+
+
+# ------------------------------------------------------------------
+# 22. test_log_result_appends_row
+# ------------------------------------------------------------------
+
+def test_log_result_appends_row(tmp_path: Path) -> None:
+    """One data row after the header."""
+    tsv = tmp_path / "results.tsv"
+    init_results(tsv)
+    log_result(tsv, _sample_result())
+    lines = tsv.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 2  # header + 1 row
+
+
+# ------------------------------------------------------------------
+# 23. test_log_result_auto_initializes
+# ------------------------------------------------------------------
+
+def test_log_result_auto_initializes(tmp_path: Path) -> None:
+    """File is created automatically when log_result is called on a missing file."""
+    tsv = tmp_path / "sub" / "results.tsv"
+    assert not tsv.exists()
+    log_result(tsv, _sample_result())
+    assert tsv.exists()
+    lines = tsv.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 2  # header + 1 row
+
+
+# ------------------------------------------------------------------
+# 24. test_log_result_serializes_metric_scores
+# ------------------------------------------------------------------
+
+def test_log_result_serializes_metric_scores(tmp_path: Path) -> None:
+    """metric_scores_json dict is written as a JSON string in the TSV."""
+    tsv = tmp_path / "results.tsv"
+    log_result(tsv, _sample_result())
+    text = tsv.read_text(encoding="utf-8")
+    data_line = text.strip().split("\n")[1]
+    # The JSON-serialized dict should appear as a substring.
+    assert '"ssim"' in data_line
+    assert '"pixel_mse"' in data_line
+
+
+# ------------------------------------------------------------------
+# 25. test_load_results_empty
+# ------------------------------------------------------------------
+
+def test_load_results_empty(tmp_path: Path) -> None:
+    """Nonexistent file returns an empty list."""
+    tsv = tmp_path / "missing.tsv"
+    assert load_results(tsv) == []
+
+
+# ------------------------------------------------------------------
+# 26. test_load_results_parses_rows
+# ------------------------------------------------------------------
+
+def test_load_results_parses_rows(tmp_path: Path) -> None:
+    """Returns list of dicts with correct keys."""
+    tsv = tmp_path / "results.tsv"
+    log_result(tsv, _sample_result())
+    rows = load_results(tsv)
+    assert len(rows) == 1
+    row = rows[0]
+    for key in RESULTS_HEADER:
+        assert key in row
+
+
+# ------------------------------------------------------------------
+# 27. test_load_results_converts_numeric
+# ------------------------------------------------------------------
+
+def test_load_results_converts_numeric(tmp_path: Path) -> None:
+    """composite_score is loaded as a float."""
+    tsv = tmp_path / "results.tsv"
+    log_result(tsv, _sample_result(composite_score=0.92))
+    rows = load_results(tsv)
+    assert isinstance(rows[0]["composite_score"], float)
+    assert rows[0]["composite_score"] == pytest.approx(0.92)
+
+
+# ------------------------------------------------------------------
+# 28. test_load_results_parses_metric_scores_json
+# ------------------------------------------------------------------
+
+def test_load_results_parses_metric_scores_json(tmp_path: Path) -> None:
+    """metric_scores_json JSON string is parsed back to a dict."""
+    tsv = tmp_path / "results.tsv"
+    metrics = {"ssim": 0.82, "pixel_mse": 0.91}
+    log_result(tsv, _sample_result(metric_scores_json=metrics))
+    rows = load_results(tsv)
+    loaded_metrics = rows[0]["metric_scores_json"]
+    assert isinstance(loaded_metrics, dict)
+    assert loaded_metrics["ssim"] == pytest.approx(0.82)
+    assert loaded_metrics["pixel_mse"] == pytest.approx(0.91)
+
+
+# ------------------------------------------------------------------
+# 29. test_get_best_score
+# ------------------------------------------------------------------
+
+def test_get_best_score(tmp_path: Path) -> None:
+    """Returns the row with the highest composite_score."""
+    tsv = tmp_path / "results.tsv"
+    log_result(tsv, _sample_result(experiment="a", composite_score=0.70))
+    log_result(tsv, _sample_result(experiment="b", composite_score=0.95))
+    log_result(tsv, _sample_result(experiment="c", composite_score=0.80))
+    best = get_best_score(tsv)
+    assert best is not None
+    assert best["experiment"] == "b"
+    assert best["composite_score"] == pytest.approx(0.95)
+
+
+# ------------------------------------------------------------------
+# 30. test_get_best_score_empty
+# ------------------------------------------------------------------
+
+def test_get_best_score_empty(tmp_path: Path) -> None:
+    """Returns None when the file does not exist."""
+    tsv = tmp_path / "empty.tsv"
+    assert get_best_score(tsv) is None
+
+
+# ------------------------------------------------------------------
+# 31. test_get_score_trend
+# ------------------------------------------------------------------
+
+def test_get_score_trend(tmp_path: Path) -> None:
+    """Returns the last N composite_score values."""
+    tsv = tmp_path / "results.tsv"
+    scores = [0.60, 0.65, 0.70, 0.75, 0.80]
+    for i, s in enumerate(scores):
+        log_result(tsv, _sample_result(experiment=f"exp_{i}", composite_score=s))
+    trend = get_score_trend(tsv, last_n=3)
+    assert len(trend) == 3
+    assert trend == [pytest.approx(0.70), pytest.approx(0.75), pytest.approx(0.80)]
+
+
+# ------------------------------------------------------------------
+# 32. test_get_score_trend_fewer_than_n
+# ------------------------------------------------------------------
+
+def test_get_score_trend_fewer_than_n(tmp_path: Path) -> None:
+    """Returns all available scores when fewer than last_n exist."""
+    tsv = tmp_path / "results.tsv"
+    log_result(tsv, _sample_result(composite_score=0.55))
+    log_result(tsv, _sample_result(composite_score=0.60))
+    trend = get_score_trend(tsv, last_n=10)
+    assert len(trend) == 2
+    assert trend == [pytest.approx(0.55), pytest.approx(0.60)]
