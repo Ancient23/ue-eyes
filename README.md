@@ -1,5 +1,7 @@
 # UE Eyes
 
+> Inspired by [autoresearch](https://github.com/karpathy/autoresearch) by Andrej Karpathy.
+
 Give AI coding agents visual access to Unreal Engine 5.7 projects.
 
 UE Eyes captures screenshots from the UE editor, analyzes them, and uses that information to drive iterative development and structured parameter tuning. Install it as a Claude Code plugin and use it with any UE 5.7 project.
