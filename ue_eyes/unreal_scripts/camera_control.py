@@ -24,6 +24,15 @@ import math
 import unreal  # type: ignore  # noqa: F401  -- UE-only module
 
 # ---------------------------------------------------------------------------
+# Subsystem accessors (UE 5.7 API)
+# ---------------------------------------------------------------------------
+
+def _get_actor_subsystem():
+    """Get the EditorActorSubsystem."""
+    return unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 DEFAULT_LOCATION = [0.0, 0.0, 200.0]
@@ -44,7 +53,7 @@ def _find_actor(label):
     Returns:
         The first matching actor, or ``None`` if no actor has that label.
     """
-    actors = unreal.EditorLevelLibrary.get_all_level_actors()
+    actors = _get_actor_subsystem().get_all_level_actors()
     for actor in actors:
         if actor.get_actor_label() == label:
             return actor
@@ -136,7 +145,7 @@ def _spawn_camera(params):
     location = _make_vector(params.get("location", DEFAULT_LOCATION))
     rotation = _make_rotator(params.get("rotation", DEFAULT_ROTATION))
 
-    camera = unreal.EditorLevelLibrary.spawn_actor_from_class(
+    camera = _get_actor_subsystem().spawn_actor_from_class(
         unreal.CameraActor,
         location,
         rotation,

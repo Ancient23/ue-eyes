@@ -120,7 +120,7 @@ def _render_sequence(params):
 
     # Block until render completes (tick the engine) --------------------
     while not completion_data["done"]:
-        unreal.EditorLevelLibrary.editor_tick(TICK_INTERVAL_SECONDS)
+        unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).editor_tick(TICK_INTERVAL_SECONDS)
 
     # Scan for output PNGs ----------------------------------------------
     rendered_files = sorted(

@@ -33,6 +33,15 @@ import unreal  # type: ignore  # noqa: F401  -- UE-only module
 
 
 # ---------------------------------------------------------------------------
+# Subsystem accessors (UE 5.7 API)
+# ---------------------------------------------------------------------------
+
+def _get_actor_subsystem():
+    """Get the EditorActorSubsystem."""
+    return unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -55,7 +64,7 @@ def _find_actor_by_label(label):
     Returns:
         The first matching actor, or ``None``.
     """
-    actors = unreal.EditorLevelLibrary.get_all_level_actors()
+    actors = _get_actor_subsystem().get_all_level_actors()
     for actor in actors:
         if actor.get_actor_label() == label:
             return actor
@@ -78,7 +87,7 @@ def _discover_cameras(params):
         A dict with ``cameras`` -- a list of dicts containing each camera's
         ``name``, ``location``, and ``rotation``.
     """
-    actors = unreal.EditorLevelLibrary.get_all_level_actors()
+    actors = _get_actor_subsystem().get_all_level_actors()
     cameras = []
     for actor in actors:
         if actor.get_class().get_name() == "CameraActor":
@@ -109,7 +118,7 @@ def _find_actors(params):
     class_name = params.get("class_name")
     tag = params.get("tag")
 
-    all_actors = unreal.EditorLevelLibrary.get_all_level_actors()
+    all_actors = _get_actor_subsystem().get_all_level_actors()
     results = []
 
     for actor in all_actors:

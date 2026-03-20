@@ -26,10 +26,23 @@ import unreal  # type: ignore  # noqa: F401  -- UE-only module
 # ---------------------------------------------------------------------------
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
-PIXEL_FORMAT = unreal.EPixelFormat.PF_B8G8R8A8
 TARGET_GAMMA = 2.2
 MANIFEST_FILENAME = "capture_manifest.json"
 SNAP_PREFIX = "ue_eyes_snap"
+
+
+# ---------------------------------------------------------------------------
+# Subsystem accessors (UE 5.7 API)
+# ---------------------------------------------------------------------------
+
+def _get_editor_subsystem():
+    """Get the UnrealEditorSubsystem."""
+    return unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+
+
+def _get_actor_subsystem():
+    """Get the EditorActorSubsystem."""
+    return unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +51,7 @@ SNAP_PREFIX = "ue_eyes_snap"
 
 def _get_editor_world():
     """Return the current editor world."""
-    return unreal.EditorLevelLibrary.get_editor_world()
+    return _get_editor_subsystem().get_editor_world()
 
 
 def _find_camera_actor(world, camera_name):
@@ -51,7 +64,7 @@ def _find_camera_actor(world, camera_name):
     Returns:
         The matching actor, or ``None`` if not found.
     """
-    actors = unreal.EditorLevelLibrary.get_all_level_actors()
+    actors = _get_actor_subsystem().get_all_level_actors()
     for actor in actors:
         if actor.get_actor_label() == camera_name:
             return actor
@@ -60,7 +73,7 @@ def _find_camera_actor(world, camera_name):
 
 def _get_viewport_transform():
     """Return ``(location, rotation)`` of the active viewport camera."""
-    loc, rot = unreal.EditorLevelLibrary.get_level_viewport_camera_info()
+    loc, rot = _get_editor_subsystem().get_level_viewport_camera_info()
     return loc, rot
 
 
@@ -73,7 +86,7 @@ def _capture_frame(params):
 
     The function spawns a transient ``SceneCapture2D`` actor, renders into an
     off-screen render target, exports the result via
-    ``KismetRenderingLibrary``, writes a JSON manifest alongside the image,
+    ``RenderingLibrary``, writes a JSON manifest alongside the image,
     and cleans up the transient actor.
 
     Args:
@@ -104,16 +117,15 @@ def _capture_frame(params):
         location, rotation = _get_viewport_transform()
 
     # Spawn a transient SceneCapture2D actor ----------------------------
-    capture_actor = unreal.EditorLevelLibrary.spawn_actor_from_class(
+    capture_actor = _get_actor_subsystem().spawn_actor_from_class(
         unreal.SceneCapture2D,
         location,
         rotation,
     )
-    capture_component = capture_actor.get_capture_component2d()
+    capture_component = capture_actor.capture_component2d
 
     # Create and configure the render target ----------------------------
-    render_target = unreal.RenderTarget2D()
-    render_target.init_custom_format(width, height, PIXEL_FORMAT, False)
+    render_target = unreal.RenderingLibrary.create_render_target2d(world, width, height)
     render_target.target_gamma = TARGET_GAMMA
 
     capture_component.texture_target = render_target
@@ -127,7 +139,7 @@ def _capture_frame(params):
     filename = f"{SNAP_PREFIX}_{timestamp}.png"
     filepath = os.path.join(output_dir, filename)
 
-    unreal.KismetRenderingLibrary.export_render_target(
+    unreal.RenderingLibrary.export_render_target(
         world,
         render_target,
         output_dir,
