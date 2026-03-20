@@ -1,0 +1,30 @@
+# UE generated directories
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+
+# Content — too large to commit (137MB+ of template assets)
+# Open the project in UE 5.7 to regenerate from Third Person template
+Content/
+
+# Plugin junction — created by setup, points to ../../plugin/UEEyes/
+Plugins/
+
+# Visual Studio
+.vs/
+*.sln
+*.suo
+*.sdf
+*.opensdf
+*.opendb
+*.VC.db
+*.VC.opendb
+
+# Rider
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
