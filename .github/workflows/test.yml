@@ -1,0 +1,29 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.6.x"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Check version consistency
+        run: uv run python scripts/check_version.py
+
+      - name: Run tests
+        run: uv run pytest tests/ -v
