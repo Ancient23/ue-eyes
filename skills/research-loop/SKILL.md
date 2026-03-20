@@ -51,13 +51,13 @@ cd <project-root> && test -f tune_params.json && echo "Params exist" || echo "MI
 cd <project-root> && test -f rubric.json && echo "Rubric exists" || echo "No rubric — will use quantitative scoring only"
 ```
 
-### 6. Verify results history
+### 6. Check loop state
 
 ```bash
-cd <project-root> && test -f experiments/results.tsv && echo "Results exist — resuming" || echo "Fresh start — no prior experiments"
+cd <project-root> && uv run ue-eyes loop-status
 ```
 
-If `experiments/results.tsv` exists, read it to understand what has been tried.
+This shows experiment count, best score so far, score trend, and which parameters have and have not been tested. Use this to understand whether you are resuming or starting fresh.
 
 ---
 
@@ -67,18 +67,20 @@ Repeat the following steps indefinitely. **NEVER STOP** unless the user explicit
 
 ### Step 1: ANALYZE
 
-Read the current state:
+Get the current loop state in one command:
 
 ```bash
-# Read experiment history
-cat <project-root>/experiments/results.tsv
-
-# Read current parameters
-cat <project-root>/tune_params.json
-
-# Read rubric for goal score
-cat <project-root>/rubric.json
+cd <project-root> && uv run ue-eyes loop-status
 ```
+
+The output JSON tells you:
+- `experiment_count` — how many experiments have been run
+- `best_score` — highest composite score seen
+- `best_experiment` — ID of the best run
+- `score_trend` — last 10 scores (improving, plateauing, oscillating?)
+- `parameters` — all parameters with their current values and types
+- `tested_parameters` — parameters already tried
+- `untested_parameters` — parameters not yet tried
 
 If comparison images exist from the latest experiment, read them:
 ```bash
@@ -89,81 +91,75 @@ Read those comparison images to visually assess the current state.
 
 Analyze:
 - What is the current composite score?
-- What is the trend? (Improving, plateauing, oscillating?)
+- What is the trend?
 - Which parameters have been tried? What worked, what did not?
 - Which parameters have NOT been tried yet?
 - Are there any patterns in what improves the score?
+
+If a rubric exists, read it:
+```bash
+cat <project-root>/rubric.json
+```
 
 ### Step 2: HYPOTHESIZE
 
 Based on your analysis, form a hypothesis:
 
-1. Pick **exactly ONE** parameter to change.
-2. Decide the new value (within the defined min/max range).
+1. Pick **exactly ONE** parameter to change (prefer untested parameters first).
+2. Decide the new value (within the defined min/max/options constraints shown in `loop-status`).
 3. Write down your prediction: "Changing X from A to B should improve Y because Z."
 
 Record this hypothesis — it will be logged with the experiment.
 
-### Step 3: EDIT
+### Step 3: RUN EXPERIMENT
 
-Modify `tune_params.json` — change only the ONE parameter you chose.
-
-```bash
-# Read current params
-cat <project-root>/tune_params.json
-```
-
-Edit the file, changing only the `"value"` field of your chosen parameter.
-
-Commit the change:
-```bash
-cd <project-root> && git add tune_params.json && git commit -m "experiment: change <param_name> from <old> to <new>
-
-Hypothesis: <your prediction>"
-```
-
-### Step 4: RUN EXPERIMENT
-
-Generate a unique experiment ID (use format `exp_NNN` where NNN is the next number):
+Run the iteration with a single command. The `iterate` command handles parameter mutation, capture, scoring, verdict, and revert automatically:
 
 ```bash
-# Count existing experiments
-ls -d <project-root>/experiments/exp_* 2>/dev/null | wc -l
+cd <project-root> && uv run ue-eyes iterate \
+    --param <parameter_name> \
+    --value <new_value> \
+    --hypothesis "<your prediction>" \
+    --baseline baseline/
 ```
 
-Apply the parameter change (project-specific — this depends on how parameters are consumed). Then capture:
-
-```bash
-cd <project-root> && uv run ue-eyes snap --output experiments/exp_<NNN>/captures/
+The command outputs a JSON result:
+```json
+{
+  "verdict": "keep",
+  "parameter_name": "light_intensity",
+  "old_value": 5000.0,
+  "new_value": 8000.0,
+  "best_previous_score": 0.75,
+  "experiment_id": "exp_002",
+  "composite_score": 0.88,
+  "scores": {"ssim": 0.88}
+}
 ```
 
-Generate comparison images against the baseline:
+Possible verdicts:
+- `baseline` — first experiment, no prior results to compare against
+- `keep` — new score beat the previous best; params file updated
+- `discard` — new score did not improve; params file automatically reverted
+- `failed` — capture or scoring error; params file automatically reverted
 
-```bash
-cd <project-root> && uv run ue-eyes compare \
-    --reference baseline/ \
-    --capture experiments/exp_<NNN>/captures/ \
-    --output experiments/exp_<NNN>/comparisons/
-```
+**No manual file editing or git operations needed** — `iterate` handles everything.
 
-Compute quantitative scores:
-
-```bash
-cd <project-root> && uv run ue-eyes score \
-    --reference baseline/ \
-    --capture experiments/exp_<NNN>/captures/ \
-    --metrics ssim
-```
-
-### Step 5: EVALUATE
+### Step 4: EVALUATE
 
 #### Quantitative evaluation
 
-Record the scores from the `ue-eyes score` output. Note the composite score and individual metric scores.
+Read the JSON output from `iterate`:
+- `composite_score` — the score for this experiment
+- `best_previous_score` — what was beaten (or not)
+- `scores` — individual metric scores
 
 #### Qualitative evaluation (if rubric.json exists)
 
-Read the comparison images (side-by-side and diff heatmaps) from `experiments/exp_<NNN>/comparisons/`.
+Read the comparison images that were generated:
+```bash
+ls <project-root>/experiments/<experiment_id>/comparisons/*.png
+```
 
 For each criterion in `rubric.json`, score on a 0-10 scale:
 
@@ -178,65 +174,19 @@ joint_smoothness: 8.0 — No hyperextension visible, natural joint angles
 hand_quality: 4.0 — Fingers still clipping through each other on left hand
 ```
 
-Compute the weighted composite from your rubric scores.
+#### Update baseline if significantly improved
 
-#### Compare to previous best
-
-Read the best score from results history:
+If `verdict` is `keep` and the improvement is significant, update the baseline:
 ```bash
-# Find best composite score in results.tsv
-cat <project-root>/experiments/results.tsv
+cp <project-root>/experiments/<experiment_id>/captures/*.png <project-root>/baseline/
 ```
 
-Is the new composite score higher than the previous best?
-
-### Step 6: KEEP or DISCARD
-
-#### If IMPROVED (new score > previous best):
-
-**Keep the change.**
-
-```bash
-# Log the result — the experiment runner handles this, but verify it was logged
-cat <project-root>/experiments/results.tsv | tail -1
-```
-
-Update the baseline if the improvement is significant:
-```bash
-# Copy new captures as the new baseline
-cp <project-root>/experiments/exp_<NNN>/captures/*.png <project-root>/baseline/
-```
-
-#### If WORSE or NO CHANGE (new score <= previous best):
-
-**Discard the change.** Revert `tune_params.json` to its previous state:
-
-```bash
-cd <project-root> && git revert HEAD --no-edit
-```
-
-Log the result with verdict "discard" so you do not repeat this change.
-
-#### If FAILED (capture error, scoring error, UE crash):
-
-**Log and revert.**
-
-```bash
-cd <project-root> && git revert HEAD --no-edit
-```
-
-Record the failure in your analysis for the next iteration. Common failures:
-- UE connection lost: run `ue-eyes ping`, wait for editor to respond
-- Capture returned black frames: check that the level is loaded and viewport is active
-- Score computation failed: check that baseline and capture have matching frame counts
-
-### Step 7: LOOP
+### Step 5: LOOP
 
 Go back to Step 1. **Do not stop.**
 
 Between iterations:
-- Re-read `results.tsv` to see the full history
-- Re-read `tune_params.json` to see the current parameter state
+- Run `uv run ue-eyes loop-status` to see the full updated state
 - Verify UE is still connected: `uv run ue-eyes ping`
 
 ---
@@ -245,7 +195,7 @@ Between iterations:
 
 ### Quantitative metrics
 
-These are computed automatically by `ue-eyes score`:
+These are computed automatically by `ue-eyes iterate`:
 
 | Metric | Range | What it measures |
 |--------|-------|------------------|
@@ -285,6 +235,13 @@ If the score plateaus or you run out of obvious parameter changes, use these esc
 ### 1. Review the full history
 
 ```bash
+cd <project-root> && uv run ue-eyes loop-status
+```
+
+The `tested_parameters` and `untested_parameters` fields show what remains. Also inspect `score_trend` for direction.
+
+For full raw history:
+```bash
 cat <project-root>/experiments/results.tsv
 ```
 
@@ -296,7 +253,7 @@ Look for:
 
 ### 2. Try boundary values
 
-For each parameter, try its min and max values. Extreme values often reveal whether a parameter matters at all.
+For each parameter, try its min and max values (visible in `loop-status` output under `parameters`). Extreme values often reveal whether a parameter matters at all.
 
 ### 3. Binary search
 
@@ -305,16 +262,7 @@ If you know a parameter matters but have not found the optimal value:
 2. Based on whether it improved, narrow the range.
 3. Repeat until changes are below a meaningful threshold.
 
-### 4. Reset to best known
-
-If recent experiments have all been discards:
-```bash
-cd <project-root> && git log --oneline experiments/results.tsv | head -20
-```
-
-Find the commit with the best score and reset `tune_params.json` to those values. Then explore different parameters.
-
-### 5. Re-examine the rubric
+### 4. Re-examine the rubric
 
 Read the comparison images from the best experiment and the worst recent experiment. Ask:
 - Is the rubric measuring the right things?
@@ -323,10 +271,10 @@ Read the comparison images from the best experiment and the worst recent experim
 
 If the rubric needs updating, ask the user before changing it.
 
-### 6. Ask the user
+### 5. Ask the user
 
 If all automated strategies are exhausted, present your findings:
-- Summary of all experiments and their scores
+- Summary from `ue-eyes loop-status`
 - Which parameters had the most impact
 - What you think the bottleneck is
 - Specific questions about what to try next
@@ -345,6 +293,16 @@ If all automated strategies are exhausted, present your findings:
 | `experiments/exp_NNN/captures/` | Captured frames for experiment NNN |
 | `experiments/exp_NNN/comparisons/` | Side-by-side and diff images for experiment NNN |
 | `experiments/exp_NNN/result.json` | Full result data for experiment NNN |
+
+## CLI Commands
+
+| Command | What it does |
+|---------|-------------|
+| `ue-eyes iterate --param P --value V --hypothesis H --baseline B/` | Run one full experiment iteration (mutate, capture, score, decide, revert if needed) |
+| `ue-eyes loop-status` | Show experiment count, best score, score trend, parameter coverage |
+| `ue-eyes ping` | Check UE connection |
+| `ue-eyes snap --output DIR/` | Capture a single frame |
+| `ue-eyes score --reference R/ --capture C/` | Score a capture against a reference |
 
 ## Results TSV Format
 
