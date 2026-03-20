@@ -1,7 +1,8 @@
-"""Tests for ue_eyes.scoring — SSIM, pixel MSE, perceptual hash, and utilities."""
+"""Tests for ue_eyes.scoring — SSIM, pixel MSE, perceptual hash, rubrics, and utilities."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import cv2
@@ -9,14 +10,19 @@ import numpy as np
 import pytest
 
 from ue_eyes.scoring import (
+    RubricResult,
     compute_scores,
     create_comparison,
     create_comparison_grid,
     create_difference_map,
+    format_rubric_prompt,
+    load_rubric,
     load_scorer,
     match_frames,
+    parse_rubric_scores,
     phash_score,
     pixel_mse_score,
+    save_rubric,
     ssim_score,
 )
 
@@ -491,3 +497,251 @@ def test_create_comparison_grid_no_matches(tmp_path: Path) -> None:
     # Placeholder is 100x400
     assert result.shape[0] == 100
     assert result.shape[1] == 400
+
+
+# ===========================================================================
+# Rubric tests
+# ===========================================================================
+
+SAMPLE_RUBRIC: dict = {
+    "name": "Lighting Quality",
+    "criteria": [
+        {
+            "name": "shadow_direction",
+            "weight": 0.3,
+            "description": "Shadows should fall consistently from the key light",
+        },
+        {
+            "name": "ambient_balance",
+            "weight": 0.3,
+            "description": "Dark areas should have subtle fill, not pure black",
+        },
+        {
+            "name": "highlight_rolloff",
+            "weight": 0.4,
+            "description": "Bright areas should have smooth gradients",
+        },
+    ],
+    "goal_score": 8.0,
+    "scale": "0-10",
+}
+
+
+# ---------------------------------------------------------------------------
+# 28. RubricResult dataclass — construction + access
+# ---------------------------------------------------------------------------
+
+
+def test_rubric_result_dataclass() -> None:
+    """RubricResult can be constructed and its fields accessed."""
+    result = RubricResult(
+        per_criterion={"shadow_direction": 7.5, "ambient_balance": 8.0},
+        composite=7.75,
+        reasoning={
+            "shadow_direction": "Good shadows",
+            "ambient_balance": "Nice balance",
+        },
+    )
+    assert result.per_criterion["shadow_direction"] == 7.5
+    assert result.composite == 7.75
+    assert "Good shadows" in result.reasoning["shadow_direction"]
+
+
+# ---------------------------------------------------------------------------
+# 29. load_rubric — reads JSON, returns dict with correct keys
+# ---------------------------------------------------------------------------
+
+
+def test_load_rubric(tmp_path: Path) -> None:
+    """load_rubric reads a JSON file and returns a dict with correct keys."""
+    rubric_file = tmp_path / "rubric.json"
+    rubric_file.write_text(json.dumps(SAMPLE_RUBRIC), encoding="utf-8")
+
+    loaded = load_rubric(rubric_file)
+    assert loaded["name"] == "Lighting Quality"
+    assert len(loaded["criteria"]) == 3
+    assert loaded["goal_score"] == 8.0
+    assert loaded["scale"] == "0-10"
+
+
+# ---------------------------------------------------------------------------
+# 30. save_rubric — writes JSON, re-load matches
+# ---------------------------------------------------------------------------
+
+
+def test_save_rubric(tmp_path: Path) -> None:
+    """save_rubric writes JSON that can be re-loaded identically."""
+    rubric_file = tmp_path / "subdir" / "rubric.json"
+    save_rubric(SAMPLE_RUBRIC, rubric_file)
+    assert rubric_file.exists()
+
+    loaded = load_rubric(rubric_file)
+    assert loaded == SAMPLE_RUBRIC
+
+
+# ---------------------------------------------------------------------------
+# 31. format_rubric_prompt — includes all criteria names and descriptions
+# ---------------------------------------------------------------------------
+
+
+def test_format_rubric_prompt_includes_criteria() -> None:
+    """Prompt contains every criterion name and description."""
+    prompt = format_rubric_prompt(
+        SAMPLE_RUBRIC,
+        capture_paths=[Path("/captures/frame_001.png")],
+    )
+    for criterion in SAMPLE_RUBRIC["criteria"]:
+        assert criterion["name"] in prompt
+        assert criterion["description"] in prompt
+
+
+# ---------------------------------------------------------------------------
+# 32. format_rubric_prompt — includes image paths
+# ---------------------------------------------------------------------------
+
+
+def test_format_rubric_prompt_includes_images() -> None:
+    """Prompt lists capture and reference paths."""
+    captures = [Path("/captures/c1.png")]
+    references = [Path("/refs/r1.png")]
+    prompt = format_rubric_prompt(SAMPLE_RUBRIC, captures, references)
+    assert "/captures/c1.png" in prompt
+    assert "/refs/r1.png" in prompt
+    assert "Capture:" in prompt
+    assert "Reference:" in prompt
+
+
+# ---------------------------------------------------------------------------
+# 33. format_rubric_prompt — works without reference_paths
+# ---------------------------------------------------------------------------
+
+
+def test_format_rubric_prompt_no_references() -> None:
+    """Prompt works when reference_paths is None."""
+    prompt = format_rubric_prompt(
+        SAMPLE_RUBRIC,
+        capture_paths=[Path("/captures/c1.png")],
+        reference_paths=None,
+    )
+    assert "/captures/c1.png" in prompt
+    assert "Reference:" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# 34. parse_rubric_scores — basic well-formed response
+# ---------------------------------------------------------------------------
+
+
+def test_parse_rubric_scores_basic() -> None:
+    """Parses a well-formed response with all criteria scored."""
+    response = (
+        "shadow_direction: 7.5 \u2014 Mostly consistent\n"
+        "ambient_balance: 8.0 \u2014 Good fill\n"
+        "highlight_rolloff: 6.0 \u2014 Some clipping\n"
+    )
+    result = parse_rubric_scores(response, SAMPLE_RUBRIC)
+    assert result.per_criterion["shadow_direction"] == 7.5
+    assert result.per_criterion["ambient_balance"] == 8.0
+    assert result.per_criterion["highlight_rolloff"] == 6.0
+
+
+# ---------------------------------------------------------------------------
+# 35. parse_rubric_scores — reasoning captured correctly
+# ---------------------------------------------------------------------------
+
+
+def test_parse_rubric_scores_with_reasoning() -> None:
+    """Reasoning text is captured for each criterion."""
+    response = (
+        "shadow_direction: 7.5 \u2014 Shadows are mostly consistent but slightly off\n"
+        "ambient_balance: 8.0 \u2014 Good fill light, no pure black areas\n"
+        "highlight_rolloff: 6.0 \u2014 Some harsh clipping on the metallic surfaces\n"
+    )
+    result = parse_rubric_scores(response, SAMPLE_RUBRIC)
+    assert "mostly consistent" in result.reasoning["shadow_direction"]
+    assert "fill light" in result.reasoning["ambient_balance"]
+    assert "clipping" in result.reasoning["highlight_rolloff"]
+
+
+# ---------------------------------------------------------------------------
+# 36. parse_rubric_scores — missing criteria
+# ---------------------------------------------------------------------------
+
+
+def test_parse_rubric_scores_missing_criteria() -> None:
+    """Partial response only includes criteria that were scored."""
+    response = "shadow_direction: 7.5 \u2014 Mostly consistent\n"
+    result = parse_rubric_scores(response, SAMPLE_RUBRIC)
+    assert "shadow_direction" in result.per_criterion
+    assert "ambient_balance" not in result.per_criterion
+    assert "highlight_rolloff" not in result.per_criterion
+    assert len(result.per_criterion) == 1
+
+
+# ---------------------------------------------------------------------------
+# 37. parse_rubric_scores — extra lines ignored
+# ---------------------------------------------------------------------------
+
+
+def test_parse_rubric_scores_extra_lines_ignored() -> None:
+    """Extra commentary lines don't break parsing."""
+    response = (
+        "Here is my evaluation:\n"
+        "\n"
+        "shadow_direction: 7.5 \u2014 Mostly consistent\n"
+        "ambient_balance: 8.0 \u2014 Good fill\n"
+        "highlight_rolloff: 6.0 \u2014 Some clipping\n"
+        "\n"
+        "Overall, the lighting is decent.\n"
+    )
+    result = parse_rubric_scores(response, SAMPLE_RUBRIC)
+    assert len(result.per_criterion) == 3
+
+
+# ---------------------------------------------------------------------------
+# 38. parse_rubric_scores — composite calculation
+# ---------------------------------------------------------------------------
+
+
+def test_parse_rubric_scores_composite_calculation() -> None:
+    """Weighted composite is correctly computed from per-criterion scores."""
+    response = (
+        "shadow_direction: 7.5 \u2014 Mostly consistent\n"
+        "ambient_balance: 8.0 \u2014 Good fill\n"
+        "highlight_rolloff: 6.0 \u2014 Some clipping\n"
+    )
+    result = parse_rubric_scores(response, SAMPLE_RUBRIC)
+    # weights: shadow=0.3, ambient=0.3, highlight=0.4
+    expected = (7.5 * 0.3 + 8.0 * 0.3 + 6.0 * 0.4) / (0.3 + 0.3 + 0.4)
+    assert result.composite == pytest.approx(expected, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# 39. parse_rubric_scores — case insensitive
+# ---------------------------------------------------------------------------
+
+
+def test_parse_rubric_scores_case_insensitive() -> None:
+    """'Shadow_Direction' matches 'shadow_direction' criterion."""
+    response = "Shadow_Direction: 7.5 \u2014 Mostly consistent\n"
+    result = parse_rubric_scores(response, SAMPLE_RUBRIC)
+    assert "shadow_direction" in result.per_criterion
+    assert result.per_criterion["shadow_direction"] == 7.5
+
+
+# ---------------------------------------------------------------------------
+# 40. parse_rubric_scores — hyphen separator
+# ---------------------------------------------------------------------------
+
+
+def test_parse_rubric_scores_hyphen_separator() -> None:
+    """Uses '-' (hyphen) instead of em dash as separator."""
+    response = (
+        "shadow_direction: 7.5 - Mostly consistent\n"
+        "ambient_balance: 8.0 - Good fill\n"
+        "highlight_rolloff: 6 - Some clipping\n"
+    )
+    result = parse_rubric_scores(response, SAMPLE_RUBRIC)
+    assert len(result.per_criterion) == 3
+    assert result.per_criterion["highlight_rolloff"] == 6.0
+    assert "Mostly consistent" in result.reasoning["shadow_direction"]
