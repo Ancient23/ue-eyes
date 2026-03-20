@@ -389,3 +389,129 @@ def test_setup_command_exists(runner: CliRunner) -> None:
     result = runner.invoke(main, ["setup", "--help"])
     assert result.exit_code == 0
     assert "setup" in result.output.lower() or "project" in result.output.lower()
+
+
+# ------------------------------------------------------------------
+# iterate
+# ------------------------------------------------------------------
+
+
+def test_iterate_command_exists(runner: CliRunner) -> None:
+    """iterate --help works and documents the command."""
+    result = runner.invoke(main, ["iterate", "--help"])
+    assert result.exit_code == 0
+    assert "--param" in result.output
+    assert "--value" in result.output
+    assert "--hypothesis" in result.output
+
+
+@patch("ue_eyes.cli.run_iteration")
+@patch("ue_eyes.cli.load_params")
+@patch("ue_eyes.cli.load_config")
+def test_iterate_command_runs(
+    mock_load_config: MagicMock,
+    mock_load_params: MagicMock,
+    mock_run_iteration: MagicMock,
+    runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    """iterate calls run_iteration and dumps JSON to stdout."""
+    import json as _json
+    from ue_eyes.config import UEEyesConfig
+    from ue_eyes.experiment.loop import IterationResult
+    from ue_eyes.experiment.runner import ExperimentResult
+
+    mock_load_config.return_value = UEEyesConfig()
+
+    params_file = tmp_path / "tune_params.json"
+    params_file.write_text(
+        _json.dumps({
+            "version": 1,
+            "parameters": {
+                "light_intensity": {"value": 5000.0, "type": "float", "min": 0, "max": 50000},
+            },
+        })
+    )
+    mock_load_params.return_value = {
+        "version": 1,
+        "parameters": {
+            "light_intensity": {"value": 5000.0, "type": "float", "min": 0, "max": 50000},
+        },
+    }
+
+    fake_exp = ExperimentResult(
+        experiment_id="exp_001",
+        timestamp="2026-03-20T00:00:00+00:00",
+        params_before=None,
+        params_after=None,
+        parameter_changed="light_intensity",
+        hypothesis="test",
+        scores={"ssim": 0.85},
+        composite_score=0.85,
+        rubric_result=None,
+        verdict="baseline",
+        error=None,
+        notes="",
+        capture_dir=Path("experiments/exp_001/captures"),
+        comparison_dir=Path("experiments/exp_001/comparisons"),
+    )
+    fake_iteration = IterationResult(
+        experiment=fake_exp,
+        parameter_name="light_intensity",
+        old_value=5000.0,
+        new_value=8000.0,
+        best_previous_score=0.0,
+        verdict="baseline",
+    )
+    mock_run_iteration.return_value = fake_iteration
+
+    result = runner.invoke(main, [
+        "iterate",
+        "--param", "light_intensity",
+        "--value", "8000.0",
+        "--hypothesis", "higher is better",
+        "--params-file", str(params_file),
+    ])
+
+    assert result.exit_code == 0
+    output_data = _json.loads(result.output)
+    assert output_data["verdict"] == "baseline"
+    assert output_data["parameter_name"] == "light_intensity"
+    mock_run_iteration.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# loop-status
+# ------------------------------------------------------------------
+
+
+def test_loop_status_command_exists(runner: CliRunner) -> None:
+    """loop-status --help works and documents the command."""
+    result = runner.invoke(main, ["loop-status", "--help"])
+    assert result.exit_code == 0
+    assert "loop" in result.output.lower() or "status" in result.output.lower()
+
+
+@patch("ue_eyes.cli.get_loop_status")
+def test_loop_status_outputs_json(
+    mock_status: MagicMock,
+    runner: CliRunner,
+) -> None:
+    """loop-status outputs JSON with expected keys."""
+    import json as _json
+
+    mock_status.return_value = {
+        "experiment_count": 3,
+        "best_score": 0.88,
+        "best_experiment": "exp_002",
+        "score_trend": [0.75, 0.82, 0.88],
+        "parameters": {},
+        "tested_parameters": ["light_intensity"],
+        "untested_parameters": ["shadow_bias"],
+    }
+
+    result = runner.invoke(main, ["loop-status"])
+    assert result.exit_code == 0
+    data = _json.loads(result.output)
+    assert data["experiment_count"] == 3
+    assert data["best_experiment"] == "exp_002"

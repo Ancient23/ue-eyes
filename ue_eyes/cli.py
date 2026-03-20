@@ -22,6 +22,7 @@ from pathlib import Path
 import click
 
 from ue_eyes import __version__
+from ue_eyes.config import load_config
 from ue_eyes.project_setup import (
     find_uproject,
     add_plugins_to_uproject,
@@ -40,6 +41,8 @@ from ue_eyes.capture import snap_frame, render_sequence, DEFAULT_WIDTH, DEFAULT_
 from ue_eyes.cameras import discover_cameras
 from ue_eyes.scoring.metrics import match_frames, compute_scores, load_scorer
 from ue_eyes.scoring.compare import create_comparison, create_difference_map
+from ue_eyes.experiment.loop import coerce_param_value, run_iteration, get_loop_status
+from ue_eyes.experiment.params import load_params
 
 
 # ------------------------------------------------------------------
@@ -446,6 +449,103 @@ def setup(project_path: str) -> None:
             "  then run: ue-eyes ping",
             fg="yellow",
         )
+
+
+# ------------------------------------------------------------------
+# iterate
+# ------------------------------------------------------------------
+
+
+@main.command()
+@click.option("--param", required=True, help="Parameter name to change.")
+@click.option("--value", required=True, help="New value for the parameter (as string).")
+@click.option("--hypothesis", required=True, help="Short prediction for this change.")
+@click.option(
+    "--baseline",
+    default=None,
+    type=click.Path(exists=True),
+    help="Directory of reference captures for scoring.",
+)
+@click.option(
+    "--params-file",
+    default=None,
+    type=click.Path(exists=True),
+    help="Path to the parameter JSON file.",
+)
+def iterate(
+    param: str,
+    value: str,
+    hypothesis: str,
+    baseline: str | None,
+    params_file: str | None,
+) -> None:
+    """Run a single experiment iteration."""
+    from pathlib import Path as _Path
+
+    config = load_config()
+
+    # Resolve the params file path for coercion
+    params_path = _Path(params_file) if params_file else _Path(config.params_file)
+    try:
+        params = load_params(params_path)
+    except FileNotFoundError:
+        click.secho(
+            f"Error: params file not found: {params_path}", fg="red", err=True
+        )
+        sys.exit(1)
+
+    # Coerce the raw CLI value to the correct type
+    try:
+        coerced_value = coerce_param_value(params, param, value)
+    except KeyError as exc:
+        click.secho(f"Error: {exc}", fg="red", err=True)
+        sys.exit(1)
+    except ValueError as exc:
+        click.secho(f"Error: {exc}", fg="red", err=True)
+        sys.exit(1)
+
+    result = run_iteration(
+        config=config,
+        parameter_name=param,
+        new_value=coerced_value,
+        hypothesis=hypothesis,
+        baseline_dir=baseline,
+        params_path=params_path,
+    )
+
+    _dump_json(
+        {
+            "verdict": result.verdict,
+            "parameter_name": result.parameter_name,
+            "old_value": result.old_value,
+            "new_value": result.new_value,
+            "best_previous_score": result.best_previous_score,
+            "experiment_id": result.experiment.experiment_id,
+            "composite_score": result.experiment.composite_score,
+            "scores": result.experiment.scores,
+        }
+    )
+
+
+# ------------------------------------------------------------------
+# loop-status
+# ------------------------------------------------------------------
+
+
+@main.command("loop-status")
+@click.option(
+    "--params-file",
+    default=None,
+    type=click.Path(exists=True),
+    help="Path to the parameter JSON file.",
+)
+def loop_status(params_file: str | None) -> None:
+    """Show experiment loop status."""
+    from pathlib import Path as _Path
+
+    params_path = _Path(params_file) if params_file else None
+    status = get_loop_status(params_path=params_path)
+    _dump_json(status)
 
 
 if __name__ == "__main__":
